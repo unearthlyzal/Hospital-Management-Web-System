@@ -1,54 +1,46 @@
 from flask import Flask
-from flask_restful import Api
+from flask_restx import Api
 from db import Base, engine
 import models
+from error_handlers import register_error_handlers
+from api_docs import api
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
 
 # Create tables
 Base.metadata.create_all(bind=engine)
 
+# Initialize Flask app
 app = Flask(__name__)
-api = Api(app)
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-from resources.patients import PatientListAPI, PatientAPI, PatientAppointmentsAPI, PatientAppointmentsSortedAPI, PatientRegisterAPI
-api.add_resource(PatientListAPI, "/api/patients")
-api.add_resource(PatientAPI, "/api/patients/<string:patient_id>")
-api.add_resource(PatientAppointmentsAPI, "/api/patients/<string:patient_id>/appointments")
-api.add_resource(PatientAppointmentsSortedAPI, "/api/patients/<string:patient_id>/appointments/sorted")
-api.add_resource(PatientRegisterAPI, "/api/patients/register")
+# Initialize API documentation
+api.init_app(app)
 
+# Register error handlers
+register_error_handlers(app)
 
+# Import and register resources
+from resources.users import ns as users_ns
+from resources.doctors import ns as doctors_ns
+from resources.patients import ns as patients_ns
+from resources.appointments import ns as appointments_ns
+from resources.medical_records import ns as medical_records_ns
+from resources.departments import ns as departments_ns
+from resources.schedules import ns as schedules_ns
 
-from resources.doctors import DoctorListAPI, DoctorAPI, DoctorAppointmentsAPI, DoctorAppointmentsSortedAPI, DoctorRegisterAPI
-api.add_resource(DoctorListAPI, "/api/doctors")
-api.add_resource(DoctorAPI, "/api/doctors/<string:doctor_id>")
-api.add_resource(DoctorAppointmentsAPI, "/api/doctors/<string:doctor_id>/appointments")
-api.add_resource(DoctorAppointmentsSortedAPI, "/api/doctors/<string:doctor_id>/appointments/sorted")
-api.add_resource(DoctorRegisterAPI, "/api/doctors/register")
+api.add_namespace(users_ns)
+api.add_namespace(doctors_ns)
+api.add_namespace(patients_ns)
+api.add_namespace(appointments_ns)
+api.add_namespace(medical_records_ns)
+api.add_namespace(departments_ns)
+api.add_namespace(schedules_ns)
 
-
-from resources.appointments import AppointmentListAPI, AppointmentAPI
-api.add_resource(AppointmentListAPI, "/api/appointments")
-api.add_resource(AppointmentAPI, "/api/appointments/<appointment_id>")
-
-from resources.medical_records import MedicalRecordListAPI, PatientMedicalRecordsAPI
-api.add_resource(MedicalRecordListAPI, "/api/medical-records")
-api.add_resource(PatientMedicalRecordsAPI, "/api/patients/<string:patient_id>/medical-records")
-
-from resources.users import UserListAPI, AdminRegisterAPI
-api.add_resource(UserListAPI, "/api/users")
-api.add_resource(AdminRegisterAPI, "/api/admins/register")
-
-from resources.schedules import DoctorSchedulesAPI, ScheduleListAPI
-api.add_resource(DoctorSchedulesAPI, "/api/doctors/<string:doctor_id>/schedules")
-api.add_resource(ScheduleListAPI, "/api/schedules")
-
-from resources.schedules import ScheduleAPI
-api.add_resource(ScheduleAPI, "/api/schedules/<string:schedule_id>")
-
-from resources.departments import DepartmentListAPI, DepartmentAPI
-api.add_resource(DepartmentListAPI, "/api/departments")
-api.add_resource(DepartmentAPI,     "/api/departments/<string:department_id>")
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     app.run(debug=True)

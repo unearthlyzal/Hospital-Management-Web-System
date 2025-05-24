@@ -11,9 +11,9 @@ class User(Base):
 
     id = Column(String(10), primary_key=True)  # We'll use U001, U002, etc.
     username = Column(String(50), unique=True, nullable=False)
-    password = Column(String(100), nullable=False)  # Plain text for now; hash later
+    password = Column(String(255), nullable=False)  # Increased length for hashed passwords
     email = Column(String(100), unique=True, nullable=False)
-    role = Column(String(20))  # "Admin", "Doctor", "Patient"
+    role = Column(String(20), nullable=False)
     is_active = Column(Boolean, default=True)
 
     patients = relationship("Patient", back_populates="user")
@@ -109,7 +109,7 @@ class MedicalRecord(Base):
 
     patient = relationship("Patient")
     appointment = relationship("Appointment")
-    department = relationship("Department", back_populates="medical_records")
+    department = relationship("Department", back_populates="records")
 
 class Department(Base):
     __tablename__ = "departments"

@@ -1,6 +1,7 @@
 from flask_restful import Resource, reqparse, fields, marshal_with
-from models import Department
+from models import Department, Doctor
 from db import SessionLocal
+from sqlalchemy.orm import joinedload
 
 # How we expose departments in JSON
 department_fields = {
@@ -13,6 +14,14 @@ department_fields = {
 parser = reqparse.RequestParser()
 parser.add_argument("name",        required=True)
 parser.add_argument("description", required=False)
+
+doctor_fields = {
+    'id': fields.String,
+    'first_name': fields.String,
+    'last_name': fields.String,
+    'phone': fields.String,
+    'availability': fields.Raw
+}
 
 class DepartmentListAPI(Resource):
     @marshal_with(department_fields)
@@ -74,3 +83,22 @@ class DepartmentAPI(Resource):
         session.commit()
         session.close()
         return {"message": f"Department {department_id} deleted"}, 200
+
+class DepartmentDoctorsAPI(Resource):
+    @marshal_with(doctor_fields)
+    def get(self, department_id):
+        session = SessionLocal()
+        try:
+            # Verify department exists
+            department = session.query(Department).get(department_id)
+            if not department:
+                return {"message": "Department not found"}, 404
+
+            # Get all doctors in the department
+            doctors = session.query(Doctor)\
+                .filter(Doctor.department_id == department_id)\
+                .all()
+
+            return doctors
+        finally:
+            session.close()

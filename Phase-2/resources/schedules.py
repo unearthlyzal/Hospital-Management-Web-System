@@ -4,6 +4,8 @@ from resources.doctors import doctor_fields
 from db import SessionLocal
 from sqlalchemy.orm import joinedload
 import datetime
+from sqlalchemy.exc import IntegrityError
+from datetime import datetime, timedelta
 
 def get_day(obj):
     # obj.datetime is a Python datetime
@@ -106,3 +108,40 @@ class ScheduleAPI(Resource):
         session.commit()
         session.close()
         return {"message": f"Schedule {schedule_id} deleted"}, 200
+
+class ScheduleCheckAvailabilityAPI(Resource):
+    @marshal_with(schedule_fields)
+    def get(self, doctor_id):
+        parser = reqparse.RequestParser()
+        parser.add_argument("start_date", type=str, required=True, help="Start date in YYYY-MM-DD format")
+        parser.add_argument("end_date", type=str, required=True, help="End date in YYYY-MM-DD format")
+        args = parser.parse_args()
+
+        session = SessionLocal()
+        try:
+            # Verify doctor exists
+            doctor = session.query(Doctor).get(doctor_id)
+            if not doctor:
+                return {"message": "Doctor not found"}, 404
+
+            # Convert string dates to datetime
+            try:
+                start_date = datetime.strptime(args["start_date"], "%Y-%m-%d")
+                end_date = datetime.strptime(args["end_date"], "%Y-%m-%d") + timedelta(days=1)  # Include end date
+            except ValueError:
+                return {"message": "Invalid date format. Use YYYY-MM-DD"}, 400
+
+            # Get available schedules
+            available_schedules = session.query(Schedule)\
+                .filter(
+                    Schedule.doctor_id == doctor_id,
+                    Schedule.datetime >= start_date,
+                    Schedule.datetime < end_date,
+                    Schedule.is_available == True
+                )\
+                .order_by(Schedule.datetime)\
+                .all()
+
+            return available_schedules
+        finally:
+            session.close()

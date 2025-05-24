@@ -1,24 +1,33 @@
 from flask_restful import Resource, reqparse, fields, marshal_with
 from sqlalchemy import desc
-from models import MedicalRecord
+from models import MedicalRecord, Patient, Appointment
 from db import SessionLocal
+from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 
 def get_dept_name(rec):
     return rec.department.name if rec.department else None
 
+def validate_date(date_str):
+    try:
+        date = datetime.fromisoformat(date_str).date()
+        if date > datetime.now().date():
+            raise ValueError("Visit date cannot be in the future")
+        return date
+    except ValueError as e:
+        raise ValueError(f"Invalid date format or {str(e)}")
+
 medical_record_fields = {
     'id': fields.String,
     'patient_id': fields.String,
     'appointment_id': fields.String,
+    'department_id': fields.String,
     'diagnosis': fields.String,
     'prescription': fields.String,
     'notes': fields.String,
-    'department_id': fields.String,
-    'department': fields.String(attribute=get_dept_name),
-    'visit_date':    fields.String,   # iso date
-    'date_created': fields.DateTime, # (dt_format='iso8601')
-    'updated_at':    fields.DateTime(dt_format='iso8601'),
+    'visit_date': fields.DateTime,
+    'date_created': fields.DateTime,
+    'updated_at': fields.DateTime
 }
 
 parser = reqparse.RequestParser()
@@ -34,49 +43,125 @@ class MedicalRecordListAPI(Resource):
     @marshal_with(medical_record_fields)
     def get(self):
         session = SessionLocal()
-        records = session.query(MedicalRecord).all()
-        session.close()
-        return records
+        try:
+            records = session.query(MedicalRecord).all()
+            return records
+        finally:
+            session.close()
 
     @marshal_with(medical_record_fields)
     def post(self):
+        parser = reqparse.RequestParser()
+        parser.add_argument("patient_id", required=True)
+        parser.add_argument("appointment_id", required=True)
+        parser.add_argument("department_id", required=True)
+        parser.add_argument("diagnosis", required=True)
+        parser.add_argument("prescription", required=True)
+        parser.add_argument("notes")
         args = parser.parse_args()
+
         session = SessionLocal()
+        try:
+            # Verify patient exists
+            patient = session.query(Patient).get(args["patient_id"])
+            if not patient:
+                return {"message": "Patient not found"}, 404
 
-        last = session.query(MedicalRecord).order_by(MedicalRecord.id.desc()).first()
-        if last:
-            last_num = int(last.id[1:])
-        else:
-            last_num = 0
-        new_id = f"M{last_num + 1:03}"
+            # Get last record to generate new ID
+            last_record = session.query(MedicalRecord).order_by(MedicalRecord.id.desc()).first()
+            new_id = f"M{(int(last_record.id[1:]) + 1) if last_record else 1:03}"
 
-        new_record = MedicalRecord(
-            id=new_id,
-            patient_id=args['patient_id'],
-            appointment_id=args.get('appointment_id'),
-            diagnosis=args['diagnosis'],
-            prescription=args['prescription'],
-            notes=args.get('notes'),
-            department_id=args.get("department_id"),
-            visit_date=datetime.fromisoformat(args["visit_date"]).date()
-        )
-
-        session.add(new_record)
-        session.commit()
-        session.refresh(new_record)
-        session.close()
-        return new_record, 201
+            record = MedicalRecord(
+                id=new_id,
+                patient_id=args["patient_id"],
+                appointment_id=args["appointment_id"],
+                department_id=args["department_id"],
+                diagnosis=args["diagnosis"],
+                prescription=args["prescription"],
+                notes=args.get("notes"),
+                visit_date=datetime.now().date(),
+                date_created=datetime.now(),
+                updated_at=datetime.now()
+            )
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return record, 201
+        except IntegrityError:
+            session.rollback()
+            return {"message": "Database error occurred"}, 500
+        finally:
+            session.close()
 
 class PatientMedicalRecordsAPI(Resource):
     @marshal_with(medical_record_fields)
     def get(self, patient_id):
         session = SessionLocal()
-        # Fetch only this patient’s records, most recent first
-        records = (
-            session.query(MedicalRecord)
-                   .filter(MedicalRecord.patient_id == patient_id)
-                   .order_by(desc(MedicalRecord.visit_date))
-                   .all()
-        )
+        try:
+            # Verify patient exists
+            patient = session.query(Patient).get(patient_id)
+            if not patient:
+                return {"message": "Patient not found"}, 404
+
+            # Get all medical records for the patient
+            records = session.query(MedicalRecord)\
+                .filter(MedicalRecord.patient_id == patient_id)\
+                .order_by(MedicalRecord.visit_date.desc())\
+                .all()
+            return records
+        finally:
+            session.close()
+
+class MedicalRecordAPI(Resource):
+    @marshal_with(medical_record_fields)
+    def get(self, record_id):
+        session = SessionLocal()
+        try:
+            record = session.query(MedicalRecord).get(record_id)
+            if not record:
+                return {"message": "Medical record not found"}, 404
+            return record
+        finally:
+            session.close()
+
+    @marshal_with(medical_record_fields)
+    def put(self, record_id):
+        parser = reqparse.RequestParser()
+        parser.add_argument("diagnosis")
+        parser.add_argument("prescription")
+        parser.add_argument("notes")
+        args = parser.parse_args()
+
+        session = SessionLocal()
+        try:
+            record = session.query(MedicalRecord).get(record_id)
+            if not record:
+                return {"message": "Medical record not found"}, 404
+
+            if args.get("diagnosis"):
+                record.diagnosis = args["diagnosis"]
+            if args.get("prescription"):
+                record.prescription = args["prescription"]
+            if args.get("notes"):
+                record.notes = args["notes"]
+            
+            record.updated_at = datetime.now()
+            session.commit()
+            session.refresh(record)
+            return record
+        except IntegrityError:
+            session.rollback()
+            return {"message": "Database error occurred"}, 500
+        finally:
+            session.close()
+
+    def delete(self, record_id):
+        session = SessionLocal()
+        record = session.query(MedicalRecord).get(record_id)
+        if not record:
+            session.close()
+            return {"message": "Medical record not found"}, 404
+        session.delete(record)
+        session.commit()
         session.close()
-        return records
+        return {"message": f"Medical record {record_id} deleted"}, 200

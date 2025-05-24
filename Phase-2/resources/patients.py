@@ -1,8 +1,9 @@
 from flask_restful import Resource, reqparse, fields, marshal_with
-from models import Patient, User
+from models import Patient, User, Appointment, Schedule, MedicalRecord, Doctor
 from db import SessionLocal
 from sqlalchemy.orm import joinedload
 from datetime import datetime
+from sqlalchemy.exc import IntegrityError
 
 # Define how the output should look
 patient_fields = {
@@ -149,20 +150,6 @@ class PatientRegisterAPI(Resource):
         session.close()
         return {"message": f"Patient {patient.id} created and linked to user {user.id}"}, 201
 
-
-# class PatientAPI(Resource):
-#     def delete(self, patient_id):
-#         session = SessionLocal()
-#         patient = session.query(Patient).filter(Patient.id == patient_id).first()
-#         if not patient:
-#             session.close()
-#             return {"message": "Patient not found"}, 404
-
-#         session.delete(patient)
-#         session.commit()
-#         session.close()
-#         return {"message": f"Patient {patient_id} deleted"}, 200
-
 class PatientAppointmentsAPI(Resource):
     @marshal_with(appointment_fields)
     def get(self, patient_id):
@@ -204,3 +191,101 @@ class PatientAppointmentsSortedAPI(Resource):
             "upcoming": upcoming,
             "history": history
         }
+
+class PatientBookAppointmentAPI(Resource):
+    def post(self, patient_id):
+        parser = reqparse.RequestParser()
+        parser.add_argument("schedule_id", required=True)
+        args = parser.parse_args()
+
+        session = SessionLocal()
+        try:
+            # Verify patient exists
+            patient = session.query(Patient).get(patient_id)
+            if not patient:
+                return {"message": "Patient not found"}, 404
+
+            # Get and verify schedule
+            schedule = session.query(Schedule).get(args["schedule_id"])
+            if not schedule:
+                return {"message": "Schedule not found"}, 404
+            
+            if not schedule.is_available:
+                return {"message": "This time slot is not available"}, 400
+
+            if schedule.datetime < datetime.now():
+                return {"message": "Cannot book past time slots"}, 400
+
+            # Create new appointment
+            last_appointment = session.query(Appointment).order_by(Appointment.id.desc()).first()
+            new_appointment_id = f"A{(int(last_appointment.id[1:]) + 1) if last_appointment else 1:03}"
+            
+            appointment = Appointment(
+                id=new_appointment_id,
+                patient_id=patient_id,
+                doctor_id=schedule.doctor_id,
+                schedule_id=schedule.id,
+                status="Scheduled"
+            )
+
+            # Mark schedule as unavailable
+            schedule.is_available = False
+
+            session.add(appointment)
+            session.commit()
+            return {"message": "Appointment booked successfully", "appointment_id": appointment.id}, 201
+        except IntegrityError:
+            session.rollback()
+            return {"message": "Database error occurred"}, 500
+        finally:
+            session.close()
+
+medical_record_fields = {
+    'id': fields.String,
+    'diagnosis': fields.String,
+    'prescription': fields.String,
+    'notes': fields.String,
+    'visit_date': fields.DateTime,
+    'date_created': fields.DateTime,
+    'updated_at': fields.DateTime
+}
+
+appointment_fields = {
+    'id': fields.String,
+    'status': fields.String,
+    'schedule': fields.Nested({
+        'datetime': fields.DateTime,
+        'duration': fields.Integer
+    }),
+    'doctor': fields.Nested({
+        'first_name': fields.String,
+        'last_name': fields.String,
+        'department_id': fields.String
+    }),
+    'medical_record': fields.Nested(medical_record_fields)
+}
+
+class PatientViewHistoryAPI(Resource):
+    @marshal_with(appointment_fields)
+    def get(self, patient_id):
+        session = SessionLocal()
+        try:
+            # Verify patient exists
+            patient = session.query(Patient).get(patient_id)
+            if not patient:
+                return {"message": "Patient not found"}, 404
+
+            # Get all appointments with related data
+            appointments = session.query(Appointment)\
+                .filter(Appointment.patient_id == patient_id)\
+                .options(
+                    joinedload(Appointment.schedule),
+                    joinedload(Appointment.doctor),
+                    joinedload(Appointment.medical_record)
+                )\
+                .order_by(Appointment.schedule.has(Schedule.datetime.desc()))\
+                .all()
+
+            return appointments
+        finally:
+            session.close()

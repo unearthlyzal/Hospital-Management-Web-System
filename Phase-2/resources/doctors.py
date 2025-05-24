@@ -1,8 +1,10 @@
 from flask_restful import Resource, reqparse, fields, marshal_with
-from models import Doctor
-from models import User
+from models import Doctor, Schedule, User
 from db import SessionLocal
 from sqlalchemy.orm import joinedload
+from sqlalchemy.exc import IntegrityError
+import json
+from datetime import datetime, timedelta
 
 def get_dept_name(doc):
     return doc.department_obj.name if doc.department_obj else None
@@ -215,5 +217,102 @@ class DoctorAppointmentsSortedAPI(Resource):
             "upcoming": upcoming,
             "history": history
         }
+
+class DoctorSetAvailabilityAPI(Resource):
+    def post(self, doctor_id):
+        parser = reqparse.RequestParser()
+        parser.add_argument("availability", type=dict, required=True, 
+            help="Availability should be a dictionary with days as keys and time ranges as values")
+        args = parser.parse_args()
+
+        session = SessionLocal()
+        try:
+            doctor = session.query(Doctor).get(doctor_id)
+            if not doctor:
+                return {"message": "Doctor not found"}, 404
+
+            # Update the availability JSON
+            doctor.availability = args["availability"]
+            session.commit()
+
+            # Now create/update schedule entries for the next 30 days based on availability
+            start_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = start_date + timedelta(days=30)
+            current_date = start_date
+
+            # Delete existing future schedules
+            session.query(Schedule).filter(
+                Schedule.doctor_id == doctor_id,
+                Schedule.datetime >= start_date
+            ).delete()
+
+            # Create new schedules
+            new_schedules = []
+            while current_date < end_date:
+                day_name = current_date.strftime("%A")
+                if day_name in args["availability"]:
+                    time_ranges = args["availability"][day_name].split(",")
+                    for time_range in time_ranges:
+                        start_time, end_time = time_range.split("-")
+                        start_hour = int(start_time.strip())
+                        end_hour = int(end_time.strip())
+                        
+                        for hour in range(start_hour, end_hour):
+                            schedule_time = current_date.replace(hour=hour)
+                            new_schedules.append(Schedule(
+                                id=f"SC{len(new_schedules)+1:04}",
+                                doctor_id=doctor_id,
+                                datetime=schedule_time,
+                                duration=60,
+                                is_available=True
+                            ))
+                current_date += timedelta(days=1)
+
+            session.bulk_save_objects(new_schedules)
+            session.commit()
+            return {"message": "Availability updated successfully"}, 200
+        except Exception as e:
+            session.rollback()
+            return {"message": f"Error occurred: {str(e)}"}, 500
+        finally:
+            session.close()
+
+schedule_fields = {
+    'id': fields.String,
+    'datetime': fields.DateTime,
+    'duration': fields.Integer,
+    'is_available': fields.Boolean
+}
+
+class DoctorViewScheduleAPI(Resource):
+    @marshal_with(schedule_fields)
+    def get(self, doctor_id):
+        parser = reqparse.RequestParser()
+        parser.add_argument("start_date", type=str, required=False)
+        parser.add_argument("end_date", type=str, required=False)
+        args = parser.parse_args()
+
+        session = SessionLocal()
+        try:
+            # Verify doctor exists
+            doctor = session.query(Doctor).get(doctor_id)
+            if not doctor:
+                return {"message": "Doctor not found"}, 404
+
+            query = session.query(Schedule).filter(Schedule.doctor_id == doctor_id)
+
+            # Add date filters if provided
+            if args["start_date"]:
+                start_date = datetime.strptime(args["start_date"], "%Y-%m-%d")
+                query = query.filter(Schedule.datetime >= start_date)
+            if args["end_date"]:
+                end_date = datetime.strptime(args["end_date"], "%Y-%m-%d")
+                query = query.filter(Schedule.datetime <= end_date)
+
+            # Order by datetime
+            schedules = query.order_by(Schedule.datetime).all()
+            return schedules
+        finally:
+            session.close()
 
 
