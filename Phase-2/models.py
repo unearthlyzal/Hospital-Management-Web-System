@@ -2,8 +2,7 @@ from sqlalchemy import Column, Integer, String, JSON, ForeignKey, Date, DateTime
 from sqlalchemy.orm import relationship
 from db import Base
 from datetime import datetime
-
-# from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import Boolean
 
 class User(Base):
@@ -15,10 +14,18 @@ class User(Base):
     email = Column(String(100), unique=True, nullable=False)
     role = Column(String(20), nullable=False)
     is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     patients = relationship("Patient", back_populates="user")
     doctors  = relationship("Doctor", back_populates="user")
     admins   = relationship("Admin",   back_populates="user")
+
+    def set_password(self, password):
+        self.password = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password, password)
 
 class Patient(Base):
     __tablename__ = "patients"
@@ -32,6 +39,8 @@ class Patient(Base):
     address    = Column(String(200), nullable=True)
     email = Column(String(100), unique=True)
     phone = Column(String(20))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", back_populates="patients")
     appointments = relationship("Appointment", back_populates="patient")
@@ -55,6 +64,15 @@ class Doctor(Base):
     appointments = relationship("Appointment", back_populates="doctor")
     schedules    = relationship("Schedule", back_populates="doctor")
     department_obj = relationship("Department", back_populates="doctors")
+
+    specialization = Column(String(100), nullable=False)
+    qualification = Column(String(200), nullable=False)
+    experience_years = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    availabilities = relationship("DoctorAvailability", back_populates="doctor")
 
 class Admin(Base):
     __tablename__ = "admins"
@@ -116,6 +134,21 @@ class Department(Base):
     id          = Column(String(10), primary_key=True)
     name        = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     doctors     = relationship("Doctor", back_populates="department_obj")
     records     = relationship("MedicalRecord", back_populates="department")
+
+class DoctorAvailability(Base):
+    __tablename__ = "doctor_availabilities"
+    id = Column(Integer, primary_key=True)
+    doctor_id = Column(Integer, ForeignKey("doctors.id"))
+    day_of_week = Column(Integer, nullable=False)  # 0 = Monday, 6 = Sunday
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=False)
+    is_available = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    doctor = relationship("Doctor", back_populates="availabilities")

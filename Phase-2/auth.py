@@ -4,10 +4,15 @@ import jwt
 from datetime import datetime, timedelta
 from models import User
 from db import SessionLocal
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configuration
-SECRET_KEY = 'your-secret-key-here'  # In production, use environment variable
-TOKEN_EXPIRATION = 24  # hours
+SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'your-secret-key-here')  # In production, use environment variable
+TOKEN_EXPIRATION = int(os.getenv('TOKEN_EXPIRATION_HOURS', '24'))  # hours
 
 def generate_token(user_id, role):
     """Generate a JWT token for the user"""
@@ -64,6 +69,25 @@ def role_required(allowed_roles):
             return f(*args, **kwargs)
         return decorated
     return decorator
+
+def admin_required(f):
+    """Decorator to require admin role"""
+    return role_required(['Admin'])(f)
+
+def get_current_user():
+    """Get the current authenticated user"""
+    token = get_token_from_header()
+    if not token:
+        return None
+    
+    payload = verify_token(token)
+    if not payload:
+        return None
+    
+    session = SessionLocal()
+    user = session.query(User).get(payload['user_id'])
+    session.close()
+    return user
 
 # Role-based access control permissions
 PERMISSIONS = {

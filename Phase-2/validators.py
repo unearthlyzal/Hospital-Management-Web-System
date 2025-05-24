@@ -88,4 +88,31 @@ def validate_schedule_time(start_time, end_time):
             raise ValidationError('End time must be after start time')
         return start_time, end_time
     except ValueError:
-        raise ValidationError('Invalid time format. Use HH:MM') 
+        raise ValidationError('Invalid time format. Use HH:MM')
+
+def validate_user_data(data):
+    """Validate user registration/update data"""
+    errors = {}
+    
+    try:
+        if 'email' in data:
+            validate_email(data['email'])
+    except ValidationError as e:
+        errors['email'] = str(e)
+        
+    try:
+        if 'password' in data:
+            validate_password(data['password'])
+    except ValidationError as e:
+        errors['password'] = str(e)
+        
+    try:
+        if 'role' in data:
+            validate_role(data['role'])
+    except ValidationError as e:
+        errors['role'] = str(e)
+        
+    if errors:
+        raise ValidationError(errors)
+    
+    return data 

@@ -4,6 +4,9 @@ from db import SessionLocal
 from sqlalchemy.orm import joinedload
 from datetime import datetime
 from sqlalchemy.exc import IntegrityError
+from flask_restx import Namespace, Resource, fields
+from flask import request
+from auth import admin_required, get_current_user
 
 # Define how the output should look
 patient_fields = {
@@ -36,78 +39,91 @@ parser.add_argument("gender")       # "M" or "F"
 parser.add_argument("address")      # optional
 parser.add_argument("user_id")      # required in manual create
 
-class PatientListAPI(Resource):
-    @marshal_with(patient_fields)
+ns = Namespace('patients', description='Patient operations')
+
+user_model = ns.model('User', {
+    'id': fields.Integer(readonly=True),
+    'username': fields.String(required=True),
+    'email': fields.String(required=True),
+    'role': fields.String(required=True)
+})
+
+patient_model = ns.model('Patient', {
+    'id': fields.Integer(readonly=True),
+    'user_id': fields.Integer(required=True),
+    'user': fields.Nested(user_model),
+    'date_of_birth': fields.String(),
+    'gender': fields.String(),
+    'blood_type': fields.String()
+})
+
+@ns.route('')
+class PatientList(Resource):
+    @admin_required
+    @ns.marshal_list_with(patient_model)
     def get(self):
-        session = SessionLocal()
-        patients = session.query(Patient).all()
-        session.close()
-        return patients
+        """Get all patients (Admin only)"""
+        return Patient.query.join(User).all()
 
-    @marshal_with(patient_fields)
+    @admin_required
+    @ns.expect(patient_model)
+    @ns.marshal_with(patient_model)
     def post(self):
-        args = parser.parse_args()
-        session = SessionLocal()
-
-        last = session.query(Patient).order_by(Patient.id.desc()).first()
-        new_id = f"P{(int(last.id[1:]) + 1) if last else 1:03}"
-
-        new_patient = Patient(
-            id=new_id,
-            first_name=args["first_name"],
-            last_name=args["last_name"],
-            email=args["email"],
-            phone=args["phone"],
-            birth_date=args.get("birth_date"),
-            gender=args.get("gender"),
-            address=args.get("address"),
-            user_id=args.get("user_id")
+        """Create a new patient (Admin only)"""
+        data = request.json
+        patient = Patient(
+            user_id=data['user_id'],
+            date_of_birth=data.get('date_of_birth'),
+            gender=data.get('gender'),
+            blood_type=data.get('blood_type')
         )
-        session.add(new_patient)
-        session.commit()
-        session.refresh(new_patient)
-        session.close()
-        return new_patient, 201
+        db.session.add(patient)
+        db.session.commit()
+        return patient, 201
 
-class PatientAPI(Resource):
-    @marshal_with(patient_fields)
-    def get(self, patient_id):
-        session = SessionLocal()
-        patient = session.query(Patient).filter(Patient.id == patient_id).first()
-        session.close()
-        if not patient:
-            return {"message": "Patient not found"}, 404
+@ns.route('/<int:id>')
+class PatientResource(Resource):
+    @ns.marshal_with(patient_model)
+    def get(self, id):
+        """Get a patient by ID"""
+        current_user = get_current_user()
+        patient = Patient.query.join(User).filter(Patient.id == id).first_or_404()
+        
+        # Patients can only view their own profile
+        if current_user.role == 'patient' and patient.user_id != current_user.id:
+            return {'message': 'Unauthorized'}, 403
+            
         return patient
 
-    @marshal_with(patient_fields)
-    def put(self, patient_id):
-        args = parser.parse_args()
-        session = SessionLocal()
-        patient = session.query(Patient).filter(Patient.id == patient_id).first()
-        if not patient:
-            session.close()
-            return {"message": "Patient not found"}, 404
+    @ns.expect(patient_model)
+    @ns.marshal_with(patient_model)
+    def put(self, id):
+        """Update a patient"""
+        current_user = get_current_user()
+        patient = Patient.query.get_or_404(id)
+        
+        # Only admins and the patient themselves can update the profile
+        if current_user.role != 'admin' and patient.user_id != current_user.id:
+            return {'message': 'Unauthorized'}, 403
 
-        for key, value in args.items():
-            if value is not None:
-                setattr(patient, key, value)
+        data = request.json
+        if 'date_of_birth' in data:
+            patient.date_of_birth = data['date_of_birth']
+        if 'gender' in data:
+            patient.gender = data['gender']
+        if 'blood_type' in data:
+            patient.blood_type = data['blood_type']
 
-        session.commit()
-        session.refresh(patient)
-        session.close()
-        return patient, 200
+        db.session.commit()
+        return patient
 
-    def delete(self, patient_id):
-        session = SessionLocal()
-        patient = session.query(Patient).filter(Patient.id == patient_id).first()
-        if not patient:
-            session.close()
-            return {"message": "Patient not found"}, 404
-
-        session.delete(patient)
-        session.commit()
-        session.close()
-        return {"message": f"Patient {patient_id} deleted"}, 200
+    @admin_required
+    def delete(self, id):
+        """Delete a patient (Admin only)"""
+        patient = Patient.query.get_or_404(id)
+        db.session.delete(patient)
+        db.session.commit()
+        return '', 204
 
 class PatientRegisterAPI(Resource):
     def post(self):

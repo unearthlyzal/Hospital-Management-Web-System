@@ -10,3 +10,9 @@ load_dotenv()
 engine = create_engine(os.getenv("SQLSERVER_CONN"), echo=True, future=True)
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
+
+# Create a db instance to be imported by other modules
+db = SessionLocal()
+
+# Export the session instance
+__all__ = ['db', 'engine', 'Base', 'SessionLocal']

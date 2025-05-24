@@ -1,10 +1,12 @@
 from flask_restful import Resource, reqparse, fields, marshal_with
-from models import Doctor, Schedule, User
+from models import Doctor, Schedule, User, DoctorAvailability
 from db import SessionLocal
 from sqlalchemy.orm import joinedload
 from sqlalchemy.exc import IntegrityError
 import json
 from datetime import datetime, timedelta
+from flask_restx import Namespace, request
+from auth import admin_required, doctor_required, get_current_user
 
 def get_dept_name(doc):
     return doc.department_obj.name if doc.department_obj else None
@@ -35,25 +37,58 @@ parser.add_argument("phone", required=True)
 parser.add_argument("availability", type=dict, required=True)
 parser.add_argument("user_id", required=True)
 
+ns = Namespace('doctors', description='Doctor operations')
 
-class DoctorListAPI(Resource):
-    @marshal_with(doctor_fields)
+user_model = ns.model('User', {
+    'id': fields.Integer(readonly=True),
+    'username': fields.String(required=True),
+    'email': fields.String(required=True),
+    'role': fields.String(required=True)
+})
+
+availability_model = ns.model('Availability', {
+    'id': fields.Integer(readonly=True),
+    'doctor_id': fields.Integer(required=True),
+    'day_of_week': fields.Integer(required=True, min=0, max=6),
+    'start_time': fields.String(required=True),
+    'end_time': fields.String(required=True),
+    'is_available': fields.Boolean(default=True)
+})
+
+doctor_model = ns.model('Doctor', {
+    'id': fields.Integer(readonly=True),
+    'user_id': fields.Integer(required=True),
+    'user': fields.Nested(user_model),
+    'specialization': fields.String(required=True),
+    'qualification': fields.String(required=True),
+    'experience_years': fields.Integer(required=True),
+    'availabilities': fields.List(fields.Nested(availability_model))
+})
+
+@ns.route('')
+class DoctorList(Resource):
+    @ns.marshal_list_with(doctor_model)
     def get(self):
+        """Get all doctors"""
         session = SessionLocal()
         doctors = (
             session.query(Doctor)
+                .join(User)
                 .options(joinedload(Doctor.department_obj))
                 .all()
         )
         session.close()
         return doctors
 
-    @marshal_with(doctor_fields)
+    @admin_required
+    @ns.expect(doctor_model)
+    @ns.marshal_with(doctor_model)
     def post(self):
-        args = parser.parse_args()
+        """Create a new doctor (Admin only)"""
+        data = request.json
         session = SessionLocal()
 
-        user = session.query(User).filter_by(id=args["user_id"], role="Doctor").first()
+        user = session.query(User).filter_by(id=data['user_id'], role="Doctor").first()
         if not user:
             session.close()
             return {"message": "Invalid user_id or role"}, 400
@@ -67,105 +102,80 @@ class DoctorListAPI(Resource):
 
         doctor = Doctor(
             id=doctor_id,
-            user_id=args["user_id"],
-            first_name=args["first_name"],
-            last_name=args["last_name"],
-            department_id=args["department_id"],
+            user_id=data['user_id'],
+            first_name=data['first_name'],
+            last_name=data['last_name'],
+            department_id=data['department_id'],
             availability={},
-            phone=args["phone"]
-            )
+            phone=data['phone'],
+            specialization=data['specialization'],
+            qualification=data['qualification'],
+            experience_years=data['experience_years']
+        )
         session.add(doctor)
         session.commit()
         session.refresh(doctor)
         session.close()
         return doctor, 201
 
-class DoctorRegisterAPI(Resource):
-    def post(self):
-        parser = reqparse.RequestParser()
-        parser.add_argument("username", required=True)
-        parser.add_argument("password", required=True)
-        parser.add_argument("email", required=True)
-        parser.add_argument("first_name", required=True)
-        parser.add_argument("last_name", required=True)
-        parser.add_argument("department_id", required=True)
-        parser.add_argument("phone", required=True)
-        args = parser.parse_args()
-
+@ns.route('/<int:id>')
+class DoctorResource(Resource):
+    @ns.marshal_with(doctor_model)
+    def get(self, id):
+        """Get a doctor by ID"""
         session = SessionLocal()
-
-        # Create new user
-        last_user = session.query(User).order_by(User.id.desc()).first()
-        new_user_id = f"U{(int(last_user.id[1:]) + 1) if last_user else 1:03}"
-        user = User(
-            id=new_user_id,
-            username=args["username"],
-            password=args["password"],
-            email=args["email"],
-            role="Doctor"
+        doctor = (
+            session.query(Doctor)
+                .join(User)
+                .filter(Doctor.id == id)
+                .first()
         )
-        session.add(user)
-
-        # Create new doctor
-        last_doctor = session.query(Doctor).order_by(Doctor.id.desc()).first()
-
-        if last_doctor and last_doctor.id.startswith('D') and last_doctor.id[1:].isdigit():
-            last_id_num = int(last_doctor.id[1:])
-        else:
-            last_id_num = 0
-
-        new_doctor_id = f"D{last_id_num + 1:03}"
-
-        new_doctor = Doctor(
-            id=new_doctor_id,
-            user_id=new_user_id,
-            first_name=args["first_name"],
-            last_name=args["last_name"],
-            department_id=args["department_id"],
-            availability={},
-            phone=args["phone"]
-            )
-        session.add(new_doctor)
-
-        session.commit()
-        session.close()
-        return {"message": f"Doctor {new_doctor.id} created and linked to user {user.id}"}, 201
-
-
-class DoctorAPI(Resource):
-    @marshal_with(doctor_fields)
-    def get(self, doctor_id):
-        session = SessionLocal()
-        doctor = session.query(Doctor).filter(Doctor.id == doctor_id).first()
         if not doctor:
             session.close()
             return {"message": "Doctor not found"}, 404
         session.close()
         return doctor
 
-    @marshal_with(doctor_fields)
-    def put(self, doctor_id):
-        args = parser.parse_args()
+    @admin_required
+    @ns.expect(doctor_model)
+    @ns.marshal_with(doctor_model)
+    def put(self, id):
+        """Update a doctor (Admin only)"""
         session = SessionLocal()
-        doctor = session.query(Doctor).filter(Doctor.id == doctor_id).first()
+        doctor = (
+            session.query(Doctor)
+                .join(User)
+                .filter(Doctor.id == id)
+                .first()
+        )
         if not doctor:
             session.close()
             return {"message": "Doctor not found"}, 404
 
-        doctor.first_name = args["first_name"]
-        doctor.last_name = args["last_name"]
-        doctor.department_id = args["department_id"]
-        doctor.phone = args["phone"]
-        doctor.availability = args["availability"]
+        data = request.json
+        doctor.first_name = data.get('first_name', doctor.first_name)
+        doctor.last_name = data.get('last_name', doctor.last_name)
+        doctor.department_id = data.get('department_id', doctor.department_id)
+        doctor.phone = data.get('phone', doctor.phone)
+        doctor.specialization = data.get('specialization', doctor.specialization)
+        doctor.qualification = data.get('qualification', doctor.qualification)
+        doctor.experience_years = data.get('experience_years', doctor.experience_years)
 
         session.commit()
         session.refresh(doctor)
         session.close()
         return doctor
 
-    def delete(self, doctor_id):
+    @admin_required
+    def delete(self, id):
+        """Delete a doctor (Admin only)"""
         session = SessionLocal()
-        doctor = session.query(Doctor).filter(Doctor.id == doctor_id).first()
+        doctor = (
+            session.query(Doctor)
+                .join(User)
+                .filter(Doctor.id == id)
+                .first()
+        )
         if not doctor:
             session.close()
             return {"message": "Doctor not found"}, 404
@@ -173,14 +183,165 @@ class DoctorAPI(Resource):
         session.delete(doctor)
         session.commit()
         session.close()
-        return {"message": f"Doctor {doctor_id} deleted"}, 200
+        return {"message": f"Doctor {id} deleted"}, 200
 
+@ns.route('/<int:id>/availabilities')
+class DoctorAvailabilityList(Resource):
+    @ns.marshal_list_with(availability_model)
+    def get(self, id):
+        """Get doctor's availabilities"""
+        session = SessionLocal()
+        doctor = (
+            session.query(Doctor)
+                .join(User)
+                .filter(Doctor.id == id)
+                .first()
+        )
+        if not doctor:
+            session.close()
+            return {"message": "Doctor not found"}, 404
+
+        availabilities = doctor.availabilities
+        session.close()
+        return availabilities
+
+    @doctor_required
+    @ns.expect(availability_model)
+    @ns.marshal_with(availability_model)
+    def post(self, id):
+        """Add doctor availability (Doctor only)"""
+        current_user = get_current_user()
+        session = SessionLocal()
+        doctor = (
+            session.query(Doctor)
+                .join(User)
+                .filter(Doctor.id == id)
+                .first()
+        )
+        if not doctor:
+            session.close()
+            return {"message": "Doctor not found"}, 404
+
+        # Verify the doctor is adding their own availability
+        if current_user.role != 'admin' and doctor.user_id != current_user.id:
+            session.close()
+            return {'message': 'Unauthorized'}, 403
+
+        data = request.json
+        availability = DoctorAvailability(
+            doctor_id=id,
+            day_of_week=data['day_of_week'],
+            start_time=data['start_time'],
+            end_time=data['end_time'],
+            is_available=data.get('is_available', True)
+        )
+        
+        session.add(availability)
+        session.commit()
+        session.close()
+        return availability, 201
+
+@ns.route('/<int:doctor_id>/availabilities/<int:id>')
+class DoctorAvailabilityResource(Resource):
+    @ns.marshal_with(availability_model)
+    def get(self, doctor_id, id):
+        """Get specific availability"""
+        session = SessionLocal()
+        doctor = (
+            session.query(Doctor)
+                .join(User)
+                .filter(Doctor.id == doctor_id)
+                .first()
+        )
+        if not doctor:
+            session.close()
+            return {"message": "Doctor not found"}, 404
+
+        availability = session.query(DoctorAvailability).filter(DoctorAvailability.id == id).first()
+        if not availability:
+            session.close()
+            return {"message": "Availability not found"}, 404
+
+        session.close()
+        return availability
+
+    @doctor_required
+    @ns.expect(availability_model)
+    @ns.marshal_with(availability_model)
+    def put(self, doctor_id, id):
+        """Update availability (Doctor or Admin only)"""
+        current_user = get_current_user()
+        session = SessionLocal()
+        doctor = (
+            session.query(Doctor)
+                .join(User)
+                .filter(Doctor.id == doctor_id)
+                .first()
+        )
+        if not doctor:
+            session.close()
+            return {"message": "Doctor not found"}, 404
+
+        # Verify the doctor is updating their own availability
+        if current_user.role != 'admin' and doctor.user_id != current_user.id:
+            session.close()
+            return {'message': 'Unauthorized'}, 403
+
+        availability = session.query(DoctorAvailability).filter(DoctorAvailability.id == id).first()
+        if not availability:
+            session.close()
+            return {"message": "Availability not found"}, 404
+
+        data = request.json
+        availability.day_of_week = data.get('day_of_week', availability.day_of_week)
+        availability.start_time = data.get('start_time', availability.start_time)
+        availability.end_time = data.get('end_time', availability.end_time)
+        availability.is_available = data.get('is_available', availability.is_available)
+        
+        session.commit()
+        session.close()
+        return availability
+
+    @doctor_required
+    def delete(self, doctor_id, id):
+        """Delete availability (Doctor or Admin only)"""
+        current_user = get_current_user()
+        session = SessionLocal()
+        doctor = (
+            session.query(Doctor)
+                .join(User)
+                .filter(Doctor.id == doctor_id)
+                .first()
+        )
+        if not doctor:
+            session.close()
+            return {"message": "Doctor not found"}, 404
+
+        # Verify the doctor is deleting their own availability
+        if current_user.role != 'admin' and doctor.user_id != current_user.id:
+            session.close()
+            return {'message': 'Unauthorized'}, 403
+
+        availability = session.query(DoctorAvailability).filter(DoctorAvailability.id == id).first()
+        if not availability:
+            session.close()
+            return {"message": "Availability not found"}, 404
+
+        session.delete(availability)
+        session.commit()
+        session.close()
+        return '', 204
 
 class DoctorAppointmentsAPI(Resource):
     @marshal_with(appointment_fields)
     def get(self, doctor_id):
         session = SessionLocal()
-        doctor = session.query(Doctor).filter(Doctor.id == doctor_id).first()
+        doctor = (
+            session.query(Doctor)
+                .join(User)
+                .filter(Doctor.id == doctor_id)
+                .first()
+        )
         if not doctor:
             session.close()
             return {"message": "Doctor not found"}, 404
@@ -195,7 +356,12 @@ class DoctorAppointmentsSortedAPI(Resource):
     @marshal_with(appointment_fields)
     def get(self, doctor_id):
         session = SessionLocal()
-        doctor = session.query(Doctor).filter(Doctor.id == doctor_id).first()
+        doctor = (
+            session.query(Doctor)
+                .join(User)
+                .filter(Doctor.id == doctor_id)
+                .first()
+        )
         if not doctor:
             session.close()
             return {"message": "Doctor not found"}, 404
@@ -227,7 +393,7 @@ class DoctorSetAvailabilityAPI(Resource):
 
         session = SessionLocal()
         try:
-            doctor = session.query(Doctor).get(doctor_id)
+            doctor = session.query(Doctor).join(User).filter(Doctor.id == doctor_id).first()
             if not doctor:
                 return {"message": "Doctor not found"}, 404
 
@@ -295,7 +461,12 @@ class DoctorViewScheduleAPI(Resource):
         session = SessionLocal()
         try:
             # Verify doctor exists
-            doctor = session.query(Doctor).get(doctor_id)
+            doctor = (
+                session.query(Doctor)
+                    .join(User)
+                    .filter(Doctor.id == doctor_id)
+                    .first()
+            )
             if not doctor:
                 return {"message": "Doctor not found"}, 404
 
