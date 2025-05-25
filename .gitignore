@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 .vscode
 node_modules
 *.log*
@@ -8,3 +9,6 @@ coverage
 .eslintcache
 tsconfig.vitest-temp.json
 .DS_Store
+=======
+node_modules
+>>>>>>> upstream/main
